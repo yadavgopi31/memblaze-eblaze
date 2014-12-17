@@ -472,7 +472,7 @@ int eblaze_ioctl_tfd_bbm(struct eblaze_device *edev, struct user_bbm_info *ubi)
 }
 #endif
 
-int eblaze_char_ioctl(struct inode *inode, struct file *file, unsigned int cmd,
+long eblaze_char_ioctl(struct file *file, unsigned int cmd,
 		      unsigned long arg)
 {
 	int minor;
@@ -484,7 +484,7 @@ int eblaze_char_ioctl(struct inode *inode, struct file *file, unsigned int cmd,
 	struct firmware_data *pfd;
 	struct dyn_info d_info;
 
-	minor = MINOR(inode->i_rdev);
+	minor = MINOR(file->f_inode->i_rdev);
 	if ((edev = find_edev_by_minor(minor)) == NULL) {
 		DPRINTK(ERR, "minor:%d can't find edev\n", minor);
 		return -EINVAL;
@@ -789,10 +789,10 @@ err:
 	return rc;
 }
 
-static struct file_operations edev_chr_ops = {
+static const struct file_operations edev_chr_ops = {
 	.owner = THIS_MODULE,
 	.open = eblaze_char_open,
-	.ioctl = eblaze_char_ioctl,
+	.unlocked_ioctl = eblaze_char_ioctl,
 };
 
 int create_edev_chrdev(struct eblaze_device *edev)
@@ -1645,22 +1645,15 @@ static struct eblaze_fpga_counter fpga_counter[] = {
 	{0x7C8032B8, 0x01, "n2x_cmd_dv_4k_cnt"}
 };
 
-static int eblaze_fpga_read_proc(char *page, char **start, off_t off,
-				 int count, int *eof, void *data)
+static int eblaze_fpga_read_proc(struct seq_file *m, void *v)
 {
-	int ret = 0;
-	int i, j, k;
+	int i, k;
 	uint32_t value;
-	struct eblaze_lun *lun = (struct eblaze_lun *)data;
+	struct eblaze_lun *lun = m->private;
 	struct eblaze_device *edev = lun->edev;
 	int nr = sizeof(fpga_counter) / sizeof(struct eblaze_fpga_counter);
 
-	for (i = (int)off, j = 0; i < nr; i++) {
-		if (ret >= PAGE_SIZE - 1024 - 256) {
-			*start = (char *)(unsigned long)j;
-			goto end;
-		}
-
+	for (i = 0; i < nr; i++) {
 		writel(fpga_counter[i].addr, edev->reg_base + 0x5000);
 		for (k = 0; k < 16; k++)
 			value = readl(edev->reg_base + 0x5004);
@@ -1672,42 +1665,57 @@ static int eblaze_fpga_read_proc(char *page, char **start, off_t off,
 			value >>= 16;
 		}
 
-		ret += sprintf(page + ret, "%-44s: %5d  %4x %12x\n",
-			       fpga_counter[i].name, value, value, fpga_counter[i].addr);
-		j++;
+		seq_printf(m, "%-44s: %5d  %4x %12x\n", fpga_counter[i].name,
+					   value, value, fpga_counter[i].addr);
 	}
 
-	*start = (char *)(unsigned long)j;
-	*eof = 1;
-end:
-	return ret;
+	return 0;
 }
 
-static int eblaze_stat_read_proc(char *page, char **start, off_t off,
-				 int count, int *eof, void *data)
+static int eblaze_fpga_open_proc(struct inode *inode, struct file *file)
 {
-	int ret = 0;
+	return single_open(file, eblaze_fpga_read_proc, PDE_DATA(inode));
+}
+
+static const struct file_operations eblaze_fpga_stat = {
+	.open		= eblaze_fpga_open_proc,
+	.read		= seq_read,
+	.llseek		= seq_lseek,
+	.release	= seq_release,
+};
+
+static int eblaze_stat_read_proc(struct seq_file *m, void *v)
+{
 	int i;
-	struct eblaze_lun *lun = (struct eblaze_lun *)data;
+	struct eblaze_lun *lun = m->private;
 	struct eblaze_device *edev = lun->edev;
 
-	ret += sprintf(page + ret, "[cmd queue] wptr:%u rptr:%u\n",
+	seq_printf(m, "[cmd queue] wptr:%u rptr:%u\n",
 		       lun->write_idx, lun->read_idx);
-	ret += sprintf(page + ret, "[cpl queue] wptr:%u rptr:%u\n",
+	seq_printf(m, "[cpl queue] wptr:%u rptr:%u\n",
 		       edev->cmpls_write_idx, edev->cmpls_read_idx);
-	ret += sprintf(page + ret, "[edev status] %u\n", edev->status);
-	ret += sprintf(page + ret, "192 luns send:\n");
-	for (i = 0; i < NR_LUNS_PER_EDEV; i++) {
-		ret += sprintf(page + ret, "%llu ", edev->luns[i]->send_io);
-	}
-	ret += sprintf(page + ret, "\n");
-	ret += sprintf(page + ret, "edev pending:%llu, wait:%llu\n",
-		       edev->pending_io, edev->wait_io);
+	seq_printf(m, "[edev status] %u\n", edev->status);
+	seq_printf(m, "192 luns send:\n");
+	for (i = 0; i < NR_LUNS_PER_EDEV; i++)
+		seq_printf(m, "%llu ", edev->luns[i]->send_io);
+	seq_printf(m, "\n");
+	seq_printf(m, "edev pending:%llu, wait:%llu\n",
+					edev->pending_io, edev->wait_io);
 
-	*eof = 1;
-
-	return ret;
+	return 0;
 }
+
+static int eblaze_stat_open_proc(struct inode *inode, struct file *file)
+{
+	return single_open(file, eblaze_stat_read_proc, PDE_DATA(inode));
+}
+
+static const struct file_operations eblaze_proc_stat = {
+	.open		= eblaze_stat_open_proc,
+	.read		= seq_read,
+	.llseek		= seq_lseek,
+	.release	= seq_release,
+};
 
 static int eblaze_create_proc_for_lun(struct eblaze_lun *lun, struct proc_dir_entry *dir_ent)
 {
@@ -1720,23 +1728,17 @@ static int eblaze_create_proc_for_lun(struct eblaze_lun *lun, struct proc_dir_en
 	snprintf(fpga_str, 16, "fpga-%u", id);
 
 	/* If create one proc file failed, just return without deleting others */
-	ent = create_proc_entry(stat_str, 0444, dir_ent);
-	if (ent == NULL) {
+	ent = proc_create_data(stat_str, 0444, dir_ent, &eblaze_proc_stat, lun);
+	if (!ent) {
 		DPRINTK(ERR, "Create entry stat failed\n");
 		return -ENOMEM;
 	}
-	ent->read_proc = eblaze_stat_read_proc;
-	ent->write_proc = NULL;
-	ent->data = lun;
 
-	ent = create_proc_entry(fpga_str, 0644, dir_ent);
-	if (ent == NULL) {
+	ent = proc_create_data(fpga_str, 0644, dir_ent, &eblaze_fpga_stat, lun);
+	if (!ent) {
 		DPRINTK(ERR, "Create entry fpga failed\n");
 		return -ENOMEM;
 	}
-	ent->read_proc = eblaze_fpga_read_proc;
-	ent->write_proc = NULL;
-	ent->data = lun;
 
 	return 0;
 }
@@ -1789,7 +1791,7 @@ void eblaze_remove_proc(struct eblaze_device *edev)
 		eblaze_remove_proc_for_lun(lun, edev->proc_dir);
 	}
 
-	remove_proc_entry(edev->name, edev->proc_dir->parent);
+	remove_proc_entry(edev->name, NULL);
 	edev->proc_dir = NULL;
 }
 

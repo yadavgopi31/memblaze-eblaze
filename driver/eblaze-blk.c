@@ -14,20 +14,20 @@ static volatile uint8_t edev_probe_idx = 0;
 
 static inline uint16_t blk_get_lun_id(struct bio *bio)
 {
-	return (bio->bi_sector * 512 / (u64)LUN_SIZE);
+	return (bio->bi_iter.bi_sector * 512 / (u64)LUN_SIZE);
 }
 
 static inline uint32_t blk_get_start_page(struct bio *bio, u16 lun_id)
 {
 	/* 4K bounce */
-	return ((bio->bi_sector * 512 % (u64)LUN_SIZE) >> BYTE_SHIFT_IN_SECTOR) +
+	return ((bio->bi_iter.bi_sector * 512 % (u64)LUN_SIZE) >> BYTE_SHIFT_IN_SECTOR) +
 	        (lun_id << LUN_SHIFT);
 }
 
 static inline uint16_t blk_get_nr_pages(struct bio *bio)
 {
 	/* block device never has erase operation */
-	return bio->bi_size >> BYTE_SHIFT_IN_SECTOR;
+	return bio->bi_iter.bi_size >> BYTE_SHIFT_IN_SECTOR;
 }
 
 void blk_io_callback(void *priv, int unused)
@@ -42,67 +42,7 @@ void blk_io_callback(void *priv, int unused)
 	bio_endio(bio, cmd->status);
 }
 
-static inline void sg_unmark_end(struct scatterlist *sg)
-{
-	sg->page_link &= ~0x02;
-}
-
-static void __blk_segment_map_sg(struct request_queue *q, struct bio_vec *bvec,
-				 struct scatterlist *sglist, struct bio_vec **bvprv,
-				 struct scatterlist **sg, int *nsegs, int *cluster)
-{
-	int nbytes = bvec->bv_len;
-	if (*bvprv && *cluster) {
-		if ((*sg)->length + nbytes > queue_max_segment_size(q))
-			goto new_segment;
-
-		if (!BIOVEC_PHYS_MERGEABLE(*bvprv, bvec))
-			goto new_segment;
-		if (!BIOVEC_SEG_BOUNDARY(q, *bvprv, bvec))
-			goto new_segment;
-
-		(*sg)->length += nbytes;
-	} else {
-new_segment:
-		if (!*sg)
-			*sg = sglist;
-		else {
-			sg_unmark_end(*sg);
-			*sg = sg_next(*sg);
-		}
-
-		sg_set_page(*sg, bvec->bv_page, nbytes, bvec->bv_offset);
-		(*nsegs)++;
-	}
-	*bvprv = bvec;
-}
-
-int blk_bio_map_sg(struct request_queue *q, struct bio *bio,
-		   struct scatterlist *sglist)
-{
-	struct bio_vec *bvec, *bvprv;
-	struct scatterlist *sg;
-	int nsegs, cluster;
-	unsigned long i;
-
-	nsegs = 0;
-	cluster = 1;	/* FIXME: just set it to 1 */
-
-	bvprv = NULL;
-	sg = NULL;
-	bio_for_each_segment(bvec, bio, i) {
-		__blk_segment_map_sg(q, bvec, sglist, &bvprv, &sg,
-				   &nsegs, &cluster);
-	} /* segments in bio */
-
-	if (sg)
-		sg_mark_end(sg);
-
-	BUG_ON(bio->bi_phys_segments && nsegs > bio->bi_phys_segments);
-	return nsegs;
-}
-
-int eblaze_make_request(struct request_queue *q, struct bio *bio)
+void eblaze_make_request(struct request_queue *q, struct bio *bio)
 {
 	struct scatterlist *sl;
 	int nr_segs;
@@ -121,7 +61,7 @@ int eblaze_make_request(struct request_queue *q, struct bio *bio)
 		;
 	sg_init_table(sl, nr_segs);
 	blk_bio_map_sg(q, bio, sl);
-	cmd->op = bio_rw_flagged(bio, BIO_RW) ? CMD_WRITE : CMD_READ;
+	cmd->op = bio_data_dir(bio) ? CMD_WRITE : CMD_READ;
 	cmd->cmd_private = (void *)bio;
 	cmd->callback = blk_io_callback;
 
@@ -136,7 +76,6 @@ int eblaze_make_request(struct request_queue *q, struct bio *bio)
 		eb_schedule_submit_work(lun);
 
 	DPRINTK(DEBUG, "cmd S:%u L:%u\n", cmd->start_fpage, cmd->nr_pages);
-	return 0;
 }
 
 int eblaze_lun_open(struct block_device *bdev, fmode_t mode)
@@ -182,11 +121,7 @@ static int edev_create_blkdev(struct eblaze_device *edev)
 	disk->private_data = edev;
 	blk_queue_make_request(queue, eblaze_make_request);
 	blk_queue_bounce_limit(queue, edev->pdev->dma_mask);
-#if defined(RHEL_RELEASE_VERSION)
 	blk_queue_max_segments(queue, edev->sg_tablesize);
-#else
-	blk_queue_max_hw_segments(queue, edev->sg_tablesize);
-#endif
 	blk_queue_max_segment_size(queue, edev->max_segment_size);
 	blk_queue_max_hw_sectors(queue, 2048);
 	blk_queue_dma_alignment(queue, 0x7);

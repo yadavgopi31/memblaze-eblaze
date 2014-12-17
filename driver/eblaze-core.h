@@ -21,6 +21,8 @@
 #include <linux/semaphore.h>
 #include <linux/mempool.h>
 #include <linux/time.h>
+#include <linux/delay.h>
+#include <linux/seq_file.h>
 
 #include "eblaze-ioctl.h"
 
