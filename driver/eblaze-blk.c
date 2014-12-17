@@ -83,11 +83,6 @@ int eblaze_lun_open(struct block_device *bdev, fmode_t mode)
 	return 0;
 }
 
-int eblaze_lun_release(struct gendisk *disk, fmode_t mode)
-{
-	return 0;
-}
-
 int eblaze_lun_ioctl(struct block_device *bdev, fmode_t mode, unsigned cmd,
 		     unsigned long arg)
 {
@@ -96,7 +91,6 @@ int eblaze_lun_ioctl(struct block_device *bdev, fmode_t mode, unsigned cmd,
 
 static const struct block_device_operations eblaze_blk_fops = {
 	.open = eblaze_lun_open,
-	.release = eblaze_lun_release,
 	.ioctl = eblaze_lun_ioctl
 };
 
