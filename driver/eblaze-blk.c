@@ -199,7 +199,7 @@ static int eblaze_init_one(struct pci_dev *pdev, const struct pci_device_id *id)
 	eblaze_create_proc(edev);
 	sema_init(&edev->ioctl_sem, 1);
 
-	return 1;
+	return 0;
 
 clean7:
 	unregister_blkdev(edev->block_major, edev->name);
